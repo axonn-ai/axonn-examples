@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# This code is taken from 
+# This code is taken from
 # https://github.com/huggingface/transformers/blob/main/examples/pytorch/language-modeling/run_clm_no_trainer.py
 # which is under the Apache License, Version 2.0
 # You can find the original license in the LICENSE file
@@ -59,10 +59,11 @@ from transformers import (
 )
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-
+from modify_opt import monkey_patch_opt_with_axonn 
+import matplotlib.pyplot as plt
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-check_min_version("4.39.0.dev0")
+check_min_version("4.38.0.dev0")
 
 logger = get_logger(__name__)
 
@@ -121,16 +122,22 @@ def parse_args():
         help="If passed, will use a slow tokenizer (not backed by the 🤗 Tokenizers library).",
     )
     parser.add_argument(
-        "--per_device_train_batch_size",
+        "--global_train_batch_size",
         type=int,
-        default=8,
-        help="Batch size (per device) for the training dataloader.",
+        default=128,
+        help="Global Training Batch Size for the training dataloader. (We will calculate per device batch sizes as per the parallel config)",
     )
     parser.add_argument(
-        "--per_device_eval_batch_size",
+        "--global_eval_batch_size",
         type=int,
-        default=8,
-        help="Batch size (per device) for the evaluation dataloader.",
+        default=128,
+        help="Global Evaluation Batch Size for the training dataloader. (We will calculate per device batch sizes as per the parallel config)",
+    )
+    parser.add_argument(
+        "--tensor-parallelism",
+        type=int,
+        default=1,
+        help="Degree of tensor parallelism (For now this should equal the number of GPUs, we will fix it later to be more generic)",
     )
     parser.add_argument(
         "--learning_rate",
@@ -243,6 +250,10 @@ def parse_args():
             "If passed, LLM loading time and RAM consumption will be benefited."
         ),
     )
+    #Adding for AxoNN 
+    parser.add_argument("--activation-checkpointing", action="store_true", help="If passed, will enable activation checkpointing.")
+    parser.add_argument("--parallelism", type=str, default="ddp", help="parallelism to use", choices=["ddp", "fsdp", "zero", "axonn"])
+    parser.add_argument("--mixed_precision", type=str, default=None, choices=["no", "fp16", "bf16", "fp8"])
     args = parser.parse_args()
 
     # Sanity checks
@@ -264,6 +275,13 @@ def parse_args():
 
     return args
 
+def get_per_device_batch_size_for_axonn(global_batch_size, gradient_accumulation_steps):
+    assert global_batch_size % gradient_accumulation_steps == 0
+    per_device_batch_size = global_batch_size // gradient_accumulation_steps
+    from axonn import axonn as ax
+    assert per_device_batch_size % ax.config.G_intra_d == 0
+    return per_device_batch_size // ax.config.G_intra_d
+
 
 def main():
     args = parse_args()
@@ -281,7 +299,22 @@ def main():
         accelerator_log_kwargs["log_with"] = args.report_to
         accelerator_log_kwargs["project_dir"] = args.output_dir
 
-    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
+    #accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
+    #AxoNN changes 
+    if args.parallelism == "ddp":
+        accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
+    elif args.parallelism == "axonn":
+        from accelerate import AxoNNPlugin
+        axonn_plugin = AxoNNPlugin(G_intra_depth=args.tensor_parallelism, G_intra_col=1, G_intra_row=1)
+        accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, axonn_plugin=axonn_plugin, mixed_precision=args.mixed_precision, **accelerator_log_kwargs)
+        print("initialized accelerator with axonn")
+        assert "facebook/opt" in args.model_name_or_path, "this demo only runs for OPT models"
+        ## todo: these should be moved within axonn.transformers
+        monkey_patch_opt_with_axonn()
+        ## Adjust batch size 
+        args.per_device_train_batch_size = get_per_device_batch_size_for_axonn(args.global_train_batch_size, args.gradient_accumulation_steps)
+        args.per_device_eval_batch_size =  get_per_device_batch_size_for_axonn(args.global_eval_batch_size, args.gradient_accumulation_steps)
+    
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -297,6 +330,7 @@ def main():
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
+    assert args.seed is not None, "For correct functioning, we require the seed to be set."
     # If passed along, set the training seed now.
     if args.seed is not None:
         set_seed(args.seed)
@@ -304,6 +338,7 @@ def main():
     # Handle the repository creation
     if accelerator.is_main_process:
         if args.push_to_hub:
+            raise NotImplementedError 
             # Retrieve of infer repo_name
             repo_name = args.hub_model_id
             if repo_name is None:
@@ -409,6 +444,7 @@ def main():
         )
 
     if args.model_name_or_path:
+        #if args.parallelism == "axonn": config["batch_size"] *= 2
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             from_tf=bool(".ckpt" in args.model_name_or_path),
@@ -419,6 +455,9 @@ def main():
     else:
         logger.info("Training new model from scratch")
         model = AutoModelForCausalLM.from_config(config, trust_remote_code=args.trust_remote_code)
+    #AxoNN activation checkpointing 
+    if args.activation_checkpointing:
+        model.gradient_checkpointing_enable()
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -568,7 +607,7 @@ def main():
         accelerator.init_trackers("clm_no_trainer", experiment_config)
 
     # Train!
-    total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+    total_batch_size = args.global_train_batch_size
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
@@ -613,9 +652,11 @@ def main():
 
     # update the progress_bar if load from checkpoint
     progress_bar.update(completed_steps)
+    losses_vs_iterations = []
 
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
+        total_loss = 0
         if args.with_tracking:
             total_loss = 0
         if args.resume_from_checkpoint and epoch == starting_epoch and resume_step is not None:
@@ -623,11 +664,12 @@ def main():
             active_dataloader = accelerator.skip_first_batches(train_dataloader, resume_step)
         else:
             active_dataloader = train_dataloader
-        for step, batch in enumerate(active_dataloader):
+        for step, batch in enumerate(tqdm(active_dataloader, disable = torch.distributed.get_rank()!=0)):
             with accelerator.accumulate(model):
                 outputs = model(**batch)
                 loss = outputs.loss
                 # We keep track of the loss at each epoch
+                total_loss += loss.detach().float()
                 if args.with_tracking:
                     total_loss += loss.detach().float()
                 accelerator.backward(loss)
@@ -648,6 +690,8 @@ def main():
                     accelerator.save_state(output_dir)
             if completed_steps >= args.max_train_steps:
                 break
+        average_loss = total_loss / (step + 1) 
+        losses_vs_iterations.append((epoch, average_loss))
 
         model.eval()
         losses = []
@@ -713,6 +757,10 @@ def main():
 
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump({"perplexity": perplexity}, f)
+    # Print out training loss vs. iterations
+    print("Training Loss vs. Iterations:")
+    for iteration, loss in losses_vs_iterations:
+        print(f"Iteration {iteration}: Loss = {loss}")
 
 
 if __name__ == "__main__":
