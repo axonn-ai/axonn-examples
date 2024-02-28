@@ -757,10 +757,6 @@ def main():
 
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump({"perplexity": perplexity}, f)
-    # Print out training loss vs. iterations
-    print("Training Loss vs. Iterations:")
-    for iteration, loss in losses_vs_iterations:
-        print(f"Iteration {iteration}: Loss = {loss}")
 
 
 if __name__ == "__main__":
