@@ -59,8 +59,8 @@ from transformers import (
 )
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-from modify_opt import monkey_patch_opt_with_axonn 
 import matplotlib.pyplot as plt
+import axonn
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.38.0.dev0")
@@ -308,9 +308,7 @@ def main():
         axonn_plugin = AxoNNPlugin(G_intra_depth=args.tensor_parallelism, G_intra_col=1, G_intra_row=1)
         accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, axonn_plugin=axonn_plugin, mixed_precision=args.mixed_precision, **accelerator_log_kwargs)
         print("initialized accelerator with axonn")
-        assert "facebook/opt" in args.model_name_or_path, "this demo only runs for OPT models"
         ## todo: these should be moved within axonn.transformers
-        monkey_patch_opt_with_axonn()
         ## Adjust batch size 
         args.per_device_train_batch_size = get_per_device_batch_size_for_axonn(args.global_train_batch_size, args.gradient_accumulation_steps)
         args.per_device_eval_batch_size =  get_per_device_batch_size_for_axonn(args.global_eval_batch_size, args.gradient_accumulation_steps)
@@ -444,14 +442,14 @@ def main():
         )
 
     if args.model_name_or_path:
-        #if args.parallelism == "axonn": config["batch_size"] *= 2
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            from_tf=bool(".ckpt" in args.model_name_or_path),
-            config=config,
-            low_cpu_mem_usage=args.low_cpu_mem_usage,
-            trust_remote_code=args.trust_remote_code,
-        )
+        with axonn.models.transformers.parallelize(args.model_name_or_path):
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model_name_or_path,
+                from_tf=bool(".ckpt" in args.model_name_or_path),
+                config=config,
+                low_cpu_mem_usage=args.low_cpu_mem_usage,
+                trust_remote_code=args.trust_remote_code,
+            )
     else:
         logger.info("Training new model from scratch")
         model = AutoModelForCausalLM.from_config(config, trust_remote_code=args.trust_remote_code)
