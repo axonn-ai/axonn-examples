@@ -26,10 +26,7 @@ def set_seed(seed=123456):
 
 
 if  __name__ == "__main__":
-    #model_id = "huggyllama/llama-7b" 
-    #model_id = "huggyllama/llama-13b"
-    #model_id = "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T"
-    model_id = "mistralai/Mixtral-8x7B-v0.1"
+    model_id = "huggyllama/llama-7b" 
     dtype = torch.float16
 
     init_everything()
