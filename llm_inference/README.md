@@ -65,7 +65,10 @@ Now, let's describe each of the arguments:
 
 
 ### Multi node, multiple GPUs
-
+Unfortunately, there is no uniform recipe for running multi-node, multi-GPU jobs. The thing you need to figure out is how to launch 
+one process per GPU across all of the nodes allocated to you. The answer to that is extremely cluster-dependent. For example, slurm based 
+clusters used srun, but even so the exact command to be used can vary across clusters. Nevertheless, once you have figured out the launch commands
+the arguments to `infer.py` are exactly the same as described in the single node, multi-GPU example.
 
 
 
