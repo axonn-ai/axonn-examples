@@ -65,10 +65,27 @@ Now, let's describe each of the arguments:
 
 
 ### Multi node, multiple GPUs
+
 Unfortunately, there is no uniform recipe for running multi-node, multi-GPU jobs. The thing you need to figure out is how to launch 
 one process per GPU across all of the nodes allocated to you. The answer to that is extremely cluster-dependent. For example, slurm based 
 clusters used srun, but even so the exact command to be used can vary across clusters. Nevertheless, once you have figured out the launch commands
 the arguments to `infer.py` are exactly the same as described in the single node, multi-GPU example.
 
+## Where is the example using tensor parallelism?
 
+We have desgined AxoNN's tensor parallelism to be modular, requiring minimal code changes to your single GPU code. 
+To parallelize an LLM in huggingface `transformers`, all you need to do is declare it within the 
+`axonn.models.transformers.parallelize` context manager:
+
+
+```
+from axonn.models.transformers import parallelize
+
+with parallelize(args.model_id):
+    model = AutoModelForCausalLM.from_pretrained(args.model_id, 
+                                                     torch_dtype=dtype, 
+                                                     attn_implementation='eager').to('cuda')
+```
+
+And that's it. 
 
