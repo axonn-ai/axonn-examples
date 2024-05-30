@@ -48,7 +48,7 @@ torchrun --nproc_per_node 4 infer.py --model_id "meta-llama/Llama-2-7b-chat-hf" 
                                      --num-prompts 10 \
                                      --seed 123456 \
                                      --static-kv-cache \ 
-                                     --dtype fp16 \
+                                     --dtype fp16 
 ```
 
 Now, let's describe each of the arguments:
