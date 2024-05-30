@@ -87,5 +87,8 @@ with parallelize(args.model_id):
                                                      attn_implementation='eager').to('cuda')
 ```
 
-And that's it. 
+This is all we have done in this [example](https://github.com/axonn-ai/axonn-examples/blob/add-static-cache/llm_inference/infer.py#L68-L71). 
+
+
+
 
