@@ -1,4 +1,94 @@
+## Offline inference with AxoNN
 
-To run on a single node with four GPUs
+Offline inference refers to the process of running machine learning models locally using a predefined 
+set of prompts or inputs. This means that the entire inference process is self-contained and operates 
+independently on the local machine. Unlike online inference, it is assumed that you have your all of your 
+inference prompts ready before inference begins. 
 
-`torchrun --nproc_per_node 4 infer.py`
+
+This example runs offline inference on large language models (LLMs) available on 
+Huggingface Transformers. It utilizes prompts sampled from the Alpaca Eval dataset to measure performance. 
+The key feature of this example is demonstrating multi-GPU inference with tensor parallelism using AxoNN.
+
+### Features 
+
+- Multi-GPU inference with Tensor Parallelism: Shard large models like `meta-llama/Llama-2-70b-chat-hf` on multiple GPUs easily
+- Compatibility with Huggingface Transformers: Works with a large set of models on huggingface transformers 
+
+## Install dependencies
+
+This example depends on `transformers` for downloading and initializing LLMs and `datasets` for downloading the 
+alpaca eval dataset. To install these, run the following command - 
+
+```
+pip install transformers datasets
+```
+
+For tensor parallelism, we use [AxoNN](https://github.com/axonn-ai/axonn). To install AxoNN, run the following commands - 
+
+```
+git clone https://github.com/axonn-ai/axonn
+cd axonn
+pip install -e .
+```
+
+That's it! Now you're ready to run this example.
+
+## Running the example
+
+### Single node, multiple GPUs
+
+Say you want to run this example on `meta-llama/Llama-2-7b-chat-hf` with 10 prompts 
+sampled from the AlpacaEval dataset. Let us also assume that you want to use tensor parallelism 
+across four GPUs on a single node. Then here's what you will run - 
+
+
+```
+torchrun --nproc_per_node 4 infer.py --model_id "meta-llama/Llama-2-7b-chat-hf" \
+                                     --num-prompts 10 \
+                                     --seed 123456 \
+                                     --static-kv-cache \ 
+                                     --dtype fp16 
+```
+
+Now, let's describe each of the arguments:
+
+- `--model_id`: Specifies the name of the Huggingface Transformers model you want to run. This argument allows you to select which pre-trained model to use for offline inference.
+
+- `--num-prompts`: Specifies the number of prompts to use from the Alpaca Eval dataset. This argument controls the size of the input data used for evaluation.
+
+- `--seed`: Specifies the random seed to use for reproducibility. This argument ensures that the randomization in the example is consistent across runs.
+
+- `--static-kv-cache`: This is a flag argument. When enabled, it instructs the code to use a static key-value cache for faster inference.
+
+- `--dtype`: Datatype for compute. One of "fp16" (default), "bf16", or "fp32".
+
+
+### Multi node, multiple GPUs
+
+Unfortunately, there is no uniform recipe for running multi-node, multi-GPU jobs. The thing you need to figure out is how to launch 
+one process per GPU across all of the nodes allocated to you. The answer to that is extremely cluster-dependent. For example, slurm based 
+clusters used srun, but even so the exact command to be used can vary across clusters. Nevertheless, once you have figured out the launch commands
+the arguments to `infer.py` are exactly the same as described in the single node, multi-GPU example.
+
+## Where is the example using tensor parallelism?
+
+We have desgined AxoNN's tensor parallelism to be modular, requiring minimal code changes to your single GPU code. 
+To parallelize an LLM in huggingface `transformers`, all you need to do is declare it within the 
+`axonn.models.transformers.parallelize` context manager:
+
+
+```
+from axonn.models.transformers import parallelize
+
+with parallelize(args.model_id):
+    model = AutoModelForCausalLM.from_pretrained(args.model_id, 
+                                                     torch_dtype=dtype, 
+                                                     attn_implementation='eager').to('cuda')
+```
+
+This is all we have done in this [example](https://github.com/axonn-ai/axonn-examples/blob/add-static-cache/llm_inference/infer.py#L68-L71). 
+You'll notice that the rest of the code is written, almost as if we are running inference on a single GPU. 
+
+
+
