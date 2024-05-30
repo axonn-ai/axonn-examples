@@ -88,7 +88,7 @@ with parallelize(args.model_id):
 ```
 
 This is all we have done in this [example](https://github.com/axonn-ai/axonn-examples/blob/add-static-cache/llm_inference/infer.py#L68-L71). 
-
+You'll notice that the rest of the code is written, almost as if we are running inference on a single GPU. 
 
 
 
