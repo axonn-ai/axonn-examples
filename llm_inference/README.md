@@ -44,7 +44,11 @@ across four GPUs on a single node. Then here's what you will run -
 
 
 ```
-torchrun --nproc_per_node 4 infer.py --model_id "meta-llama/Llama-2-7b-chat-hf" --num-prompts 10 --seed 123456 --static-kv-cache --dtype "fp16"
+torchrun --nproc_per_node 4 infer.py --model_id "meta-llama/Llama-2-7b-chat-hf" \
+                                     --num-prompts 10 \
+                                     --seed 123456 \
+                                     --static-kv-cache \ 
+                                     --dtype fp16 \
 ```
 
 Now, let's describe each of the arguments:
@@ -56,6 +60,9 @@ Now, let's describe each of the arguments:
 - `--seed`: Specifies the random seed to use for reproducibility. This argument ensures that the randomization in the example is consistent across runs.
 
 - `--static-kv-cache`: This is a flag argument. When enabled, it instructs the code to use a static key-value cache for faster inference.
+
+- `--dtype`: Datatype for compute. One of "fp16" (default), "bf16", or "fp32".
+
 
 ### Multi node, multiple GPUs
 
