@@ -105,6 +105,7 @@ if __name__ == "__main__":
                                                              torch_dtype=dtype,
                                                          attn_implementation='eager' if not args.use_flash_attention else "flash_attention_2").to('cuda').float()
 
+    model.train()
     model.gradient_checkpointing_enable()
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
     tokenized_dataset = get_tokenized_wikitext(tokenizer)
