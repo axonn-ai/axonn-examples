@@ -95,9 +95,14 @@ if __name__ == "__main__":
     set_seed(args.seed)
     dtype = dtype_map[args.dtype]
 
-    with parallelize(args.model_id, enabled=args.use_axonn):
-        model = AutoModelForCausalLM.from_pretrained(args.model_id, 
-                                                         torch_dtype=dtype, 
+    if args.use_axonn:
+        with parallelize(args.model_id):
+            model = AutoModelForCausalLM.from_pretrained(args.model_id, 
+                                                             torch_dtype=dtype, 
+                                                         attn_implementation='eager' if not args.use_flash_attention else "flash_attention_2").to('cuda').float()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(args.model_id,
+                                                             torch_dtype=dtype,
                                                          attn_implementation='eager' if not args.use_flash_attention else "flash_attention_2").to('cuda').float()
 
     model.gradient_checkpointing_enable()
