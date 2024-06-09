@@ -1,5 +1,5 @@
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, DataCollatorForSeq2Seq
 from datasets import load_dataset
 from axonn.models.transformers import parallelize 
 from axonn import axonn as ax
@@ -8,6 +8,8 @@ import random
 import numpy as np
 from argparse import ArgumentParser
 from contextlib import nullcontext
+from data_utils import get_tokenizer_mapping_fn
+from torch.utils.data import DataLoader
 
 def init_everything():
     torch.distributed.init_process_group(backend='nccl')
@@ -38,7 +40,7 @@ def create_parser():
                         help="Global Batch Size")
     parser.add_argument("--gradient-acc-steps", type=int, default=1, 
                         help="Gradient Accumulation Steps")
-    parser.add_argument("--sequence-length", type=int, default=512, 
+    parser.add_argument("--sequence-length", type=int, default=256, 
                         help="Sequence Length")
     parser.add_argument("--num-iters", type=int, default=1000, 
                         help="Number of Training Iterations")
@@ -55,20 +57,11 @@ dtype_map = {
 }
 
 
-def get_tokenized_wikitext(tokenizer):
-    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-    encodings = tokenizer("\n\n".join(dataset["text"]), return_tensors="pt")
-    return encodings
-
-def load_prompts(encodings, batch_size, prompt_length):
-    total_tokens = encodings.input_ids.shape[1]
-    input_ids = []
-    for _ in range(batch_size):
-        start_index = min(random.randint(0, total_tokens), total_tokens - prompt_length)
-        tokens = encodings.input_ids[:, start_index : start_index + prompt_length].reshape(1, prompt_length)
-        input_ids.append(tokens)
-    input_ids = torch.cat(input_ids, dim=0)
-    return input_ids
+def get_tokenized_dataset(tokenizer, sequence_length=256):
+    data = load_dataset("databricks/databricks-dolly-15k")
+    mapping_fn = get_tokenizer_mapping_fn(tokenizer, cutoff_len=sequence_length)
+    train_data = data["train"].shuffle().map(mapping_fn, remove_columns=data["train"].column_names)
+    return train_data
 
 def pretty_log(iteration,
                total_train_iters,
@@ -87,6 +80,7 @@ def pretty_log(iteration,
     peak_mem =  torch.cuda.max_memory_allocated() / 1024 / 1024 / 1024
     log_string += ' memory used by tensors {:.3f} GB (peak {:.3f} GB) '.format(curr_mem, peak_mem)
     return log_string
+
 
 if __name__ == "__main__":
     parser = create_parser()
@@ -108,7 +102,17 @@ if __name__ == "__main__":
     model.train()
     model.gradient_checkpointing_enable()
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
-    tokenized_dataset = get_tokenized_wikitext(tokenizer)
+    tokenizer.pad_token_id = (
+        0  
+    )
+    tokenizer.padding_side = "left"  
+    tokenized_dataset = get_tokenized_dataset(tokenizer, args.sequence_length)
+    dataloader = DataLoader(
+                                tokenized_dataset, 
+                                batch_size=args.global_batch_size // args.gradient_acc_steps, 
+                                collate_fn=DataCollatorForSeq2Seq(
+                                        tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True)
+                            ) 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0)
 
     scaler = torch.cuda.amp.GradScaler(enabled=(dtype == torch.float16))
@@ -116,17 +120,21 @@ if __name__ == "__main__":
 
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
-    for iter_no in range(args.num_iters):
+    iter_no = 0
+    for batch in dataloader:
         start_event.record()
         batch_loss = 0
+        input_ids, labels, attention_mask = batch["input_ids"], batch["labels"], batch["attention_mask"]
+        input_ids, labels, attention_mask = input_ids.cuda(), labels.cuda(), attention_mask.cuda()
         for grad_acc_step in range(args.gradient_acc_steps):
-            batch = load_prompts(tokenized_dataset, args.global_batch_size // args.gradient_acc_steps, args.sequence_length+1).cuda()
-            x, y = batch[:,:-1], batch[:,1:]
             with torch.amp.autocast(device_type='cuda', dtype=dtype):
-                output = model(x)
+                input_ids = input_ids[:, :-1]
+                attention_mask = attention_mask[:, :-1]
+                labels = labels[:, 1:]
+                output = model(input_ids = input_ids, attention_mask=attention_mask)
                 logits = output["logits"]
                 loss = loss_fn(logits.reshape(-1, logits.shape[-1]), 
-                               y.reshape(-1))
+                               labels.reshape(-1))
             scaler.scale(loss / args.gradient_acc_steps).backward()
             batch_loss += loss / args.gradient_acc_steps
         scaler.unscale_(optimizer)
@@ -134,6 +142,7 @@ if __name__ == "__main__":
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad(set_to_none=True)
+        iter_no += 1
         end_event.record()
         if torch.distributed.get_rank() == 0 and (iter_no % args.log_interval==0):
             torch.cuda.synchronize()
