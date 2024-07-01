@@ -1,9 +1,17 @@
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, DataCollatorForSeq2Seq
 from datasets import load_dataset
-from axonn.models.transformers import parallelize 
-from axonn import axonn as ax
 import torch
+
+# Initializing mpi4py is necessary to use 
+# pytorch lightning within interactive slurm
+# sesions
+try:
+    from mpi4py import MPI
+except ImportError:
+    pass
+
+from axonn import axonn as ax
 import random
 import numpy as np
 from argparse import ArgumentParser
@@ -16,13 +24,14 @@ from lightning.fabric import Fabric, seed_everything
 from axonn.lightning import AxonnStrategy
 from axonn.intra_layer import optimize_communication, clear_weights_cache
 
-def init_everything(dtype, num_nodes=4):
+def init_everything(dtype, num_nodes):
     torch.distributed.init_process_group(backend='nccl')
     world_size = torch.distributed.get_world_size()
     pl_strategy = AxonnStrategy(
                 G_intra_d = world_size
     )
-    fabric = Fabric(strategy=pl_strategy, devices=4, num_nodes=num_nodes, precision=dtype)
+    fabric = Fabric(strategy=pl_strategy, devices=torch.cuda.device_count(), 
+                    num_nodes=num_nodes, precision=dtype)
     fabric.launch()
 
     if torch.distributed.get_rank() == 0:
@@ -49,6 +58,8 @@ def create_parser():
                         help="Gradient Accumulation Steps")
     parser.add_argument("--sequence-length", type=int, default=256, 
                         help="Sequence Length")
+    parser.add_argument("--num-nodes", type=int, default=1, 
+                        help="Number of nodes (this needs to be passed explicitly for lightning fabric)")
     parser.add_argument("--disable-axonn", action='store_false', dest='use_axonn',
                         help="Disable AxoNN's Tensor Paralellism")
     parser.add_argument("--log-interval", type=int, default=10,
@@ -114,14 +125,14 @@ dtype_map = {
 if __name__ == "__main__":
     parser = create_parser()
     args = parser.parse_args()
-    fabric = init_everything(args.dtype)
+    fabric = init_everything(args.dtype, args.num_nodes)
     set_seed(args.seed)
     if args.wandb_log and torch.distributed.get_rank() == 0:
         import wandb
         wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=args)
 
     if args.use_axonn:
-        with parallelize(args.model_id):
+        with fabric.init_module():
             model = AutoModelForCausalLM.from_pretrained(args.model_id, 
                                                          attn_implementation='eager' if not args.use_flash_attention else "flash_attention_2").to('cuda')
     else:
