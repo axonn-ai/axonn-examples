@@ -38,7 +38,6 @@ def init_everything(dtype, num_nodes, strategy="axonn"):
         pl_strategy = AxonnStrategy(G_intra_d=world_size)
     elif strategy == "fsdp":
         from transformers.models.llama.modeling_llama import LlamaDecoderLayer as Block
-
         pl_strategy = FSDPStrategy(
             auto_wrap_policy={Block},
             activation_checkpointing_policy={Block},
