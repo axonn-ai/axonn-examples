@@ -25,8 +25,6 @@ from data_utils import get_tokenizer_mapping_fn
 from torch.utils.data import DataLoader
 
 from lightning.fabric import Fabric, seed_everything
-from axonn.intra_layer import optimize_communication, clear_weights_cache
-
 
 from axonn.lightning import AxonnStrategy
 from lightning.pytorch.strategies import DeepSpeedStrategy
@@ -42,7 +40,7 @@ def init_everything(dtype, num_nodes, strategy="axonn"):
         from transformers.models.llama.modeling_llama import LlamaDecoderLayer as Block
 
         pl_strategy = FSDPStrategy(
-            auto_wrap_policy={Block, torch.nn.Linear},
+            auto_wrap_policy={Block},
             activation_checkpointing_policy={Block},
             state_dict_type="full",
             limit_all_gathers=True,
@@ -111,21 +109,9 @@ def create_parser():
         help="Number of nodes (this needs to be passed explicitly for lightning fabric)",
     )
     parser.add_argument(
-        "--disable-axonn",
-        action="store_false",
-        dest="use_axonn",
-        help="Disable AxoNN's Tensor Paralellism",
-    )
-    parser.add_argument(
         "--log-interval", type=int, default=10, help="Interval for logging train loss"
     )
     parser.add_argument("--num-epochs", type=int, default=3, help="Number of epochs")
-    parser.add_argument(
-        "--save-every",
-        type=int,
-        default=100,
-        help="Save model weights after every --save-every iterations",
-    )
     parser.add_argument(
         "--wandb-log", action="store_true", help="Use Wandb for logging"
     )
@@ -177,7 +163,6 @@ def pretty_log(
     )
     if wandb_log:
         import wandb
-
         wandb.log(
             {
                 "iter": iteration,
@@ -207,15 +192,7 @@ if __name__ == "__main__":
 
         wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=args)
 
-    if args.use_axonn:
-        with fabric.init_module():
-            model = AutoModelForCausalLM.from_pretrained(
-                args.model_id,
-                attn_implementation=(
-                    "eager" if not args.use_flash_attention else "flash_attention_2"
-                ),
-            ).to("cuda")
-    else:
+    with fabric.init_module():
         model = AutoModelForCausalLM.from_pretrained(
             args.model_id,
             attn_implementation=(
@@ -226,12 +203,14 @@ if __name__ == "__main__":
     model.train()
     if args.strategy != "fsdp":
         model.gradient_checkpointing_enable()
+    
+    model = fabric.setup_module(model)
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=1e-5, betas=(0.9, 0.95), eps=1e-5, weight_decay=0.0
     )
 
-    model, optimizer = fabric.setup(model, optimizer)
+    optimizer = fabric.setup_optimizers(optimizer)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
     tokenizer.pad_token_id = 0
@@ -287,7 +266,7 @@ if __name__ == "__main__":
             attention_mask = attention_mask[:, :-1]
             labels = labels[:, 1:]
             ctx = (
-                optimize_communication(True, True, True, model)
+                fabric._strategy.optimize_communication(model)
                 if args.strategy == "axonn"
                 else nullcontext()
             )
@@ -296,12 +275,11 @@ if __name__ == "__main__":
                 logits = output["logits"]
                 loss = loss_fn(logits.reshape(-1, logits.shape[-1]), labels.reshape(-1))
                 fabric.backward(loss / args.gradient_acc_steps, model=model)
-            clear_weights_cache()
             batch_loss += (loss / args.gradient_acc_steps).item()
             microbatch_no += 1
 
             if microbatch_no == args.gradient_acc_steps:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                fabric.clip_gradients(model, optimizer, 1.0)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 lr_scheduler.step()
