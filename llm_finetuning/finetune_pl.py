@@ -1,4 +1,5 @@
-from datasets import load_dataset
+import os
+from datasets import load_dataset, load_from_disk
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -21,7 +22,6 @@ import random
 import numpy as np
 from argparse import ArgumentParser
 from contextlib import nullcontext
-from data_utils import get_tokenizer_mapping_fn
 from torch.utils.data import DataLoader
 
 from lightning.fabric import Fabric, seed_everything
@@ -69,10 +69,16 @@ def set_seed(seed=123456):
 def create_parser():
     parser = ArgumentParser()
     parser.add_argument(
-        "--model_id",
+        "--model-id",
         default="TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
         type=str,
         help="name of huggingface transformers model you want to run",
+    )
+    parser.add_argument(
+        "--dataset-id",
+        default="stingning/ultrachat",
+        type=str,
+        help="name of huggingface dataset you want to fine-tune on",
     )
     parser.add_argument("--seed", type=int, default=123456, help="random seed")
     parser.add_argument(
@@ -99,7 +105,7 @@ def create_parser():
         "--gradient-acc-steps", type=int, default=1, help="Gradient Accumulation Steps"
     )
     parser.add_argument(
-        "--sequence-length", type=int, default=256, help="Sequence Length"
+        "--sequence-length", type=int, default=2048, help="Sequence Length"
     )
     parser.add_argument(
         "--num-nodes",
@@ -127,8 +133,20 @@ def create_parser():
     return parser
 
 
-def get_tokenized_dataset(tokenizer, sequence_length=256):
-    data = load_dataset("tatsu-lab/alpaca")
+def get_tokenized_dataset(tokenizer, sequence_length):
+    dataset = args.dataset_id.split('/')[1]
+    assert dataset in ["alpaca", "ultrachat"]
+
+    data_dir = os.path.join('data', dataset)
+    if os.path.exists(data_dir):
+        return load_from_disk(data_dir)
+    
+    if dataset == "alpaca":
+        from alpaca_data_utils import get_tokenizer_mapping_fn
+    elif dataset == "ultrachat":
+        from ultrachat_data_utils import get_tokenizer_mapping_fn
+        
+    data = load_dataset(args.dataset_id)
     mapping_fn = get_tokenizer_mapping_fn(
         tokenizer, cutoff_len=sequence_length, train_on_inputs=False
     )
@@ -137,6 +155,8 @@ def get_tokenized_dataset(tokenizer, sequence_length=256):
         .shuffle()
         .map(mapping_fn, remove_columns=data["train"].column_names)
     )
+    os.makedirs(data_dir, exist_ok=False)
+    train_data.save_to_disk(data_dir)
     return train_data
 
 
