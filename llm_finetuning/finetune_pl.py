@@ -155,8 +155,6 @@ def get_tokenized_dataset(tokenizer, sequence_length):
         .shuffle()
         .map(mapping_fn, remove_columns=data["train"].column_names)
     )
-    os.makedirs(data_dir, exist_ok=False)
-    train_data.save_to_disk(data_dir)
     return train_data
 
 

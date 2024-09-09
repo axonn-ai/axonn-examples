@@ -1,10 +1,12 @@
 # adapted from https://github.com/thunlp/UltraChat/blob/main/train/ultrachat_dataset.py
+import torch
 
 def get_tokenizer_mapping_fn(
     tokenizer, cutoff_len, train_on_inputs=True, add_eos_token=True
 ):  
+    IGNORE_INDEX = -100
+    start_token = "\n"
     def tokenizer_mapping_fn(data_point):
-        start_token = "\n"
         labels, tokenized_ids = [], []
         tags = [i for _ in range(len(data_point["data"])//2) for i in ["User", "Assistant"]]
         for i, c in enumerate(data_point["data"]):
@@ -15,7 +17,7 @@ def get_tokenizer_mapping_fn(
                     c_input, 
                     truncation=True, 
                     max_length=cutoff_len, 
-                    add_special_tokens=False
+                    padding=False,
                 )
                 tokenized_ids += tokenized["input_ids"]
                 if train_on_inputs:
@@ -28,7 +30,7 @@ def get_tokenizer_mapping_fn(
                     c_generate, 
                     truncation=True, 
                     max_length=cutoff_len, 
-                    add_special_tokens=False
+                    padding=False,
                 )
                 tokenized_ids += tokenized["input_ids"]
                 labels += tokenized["input_ids"]
@@ -42,7 +44,7 @@ def get_tokenizer_mapping_fn(
                     c_new, 
                     truncation=True, 
                     max_length=cutoff_len, 
-                    add_special_tokens=False
+                    padding=False,
                 )
                 tokenized_ids += tokenized["input_ids"]
                 if train_on_inputs:
