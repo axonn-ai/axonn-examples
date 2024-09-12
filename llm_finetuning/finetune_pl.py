@@ -6,7 +6,6 @@ from transformers import (
     AutoConfig,
     DataCollatorForSeq2Seq,
 )
-from datasets import load_dataset
 import torch
 
 # Initializing mpi4py is necessary to use
@@ -27,6 +26,7 @@ from torch.utils.data import DataLoader
 from lightning.fabric import Fabric, seed_everything
 
 from axonn.lightning import AxonnStrategy
+from axonn.intra_layer import optimize_communication, clear_weights_cache
 from lightning.pytorch.strategies import DeepSpeedStrategy
 from lightning.fabric.strategies import FSDPStrategy
 
@@ -69,13 +69,13 @@ def set_seed(seed=123456):
 def create_parser():
     parser = ArgumentParser()
     parser.add_argument(
-        "--model-id",
+        "--model_id",
         default="TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
         type=str,
         help="name of huggingface transformers model you want to run",
     )
     parser.add_argument(
-        "--dataset-id",
+        "--dataset_id",
         default="stingning/ultrachat",
         type=str,
         help="name of huggingface dataset you want to fine-tune on",
@@ -137,7 +137,7 @@ def get_tokenized_dataset(tokenizer, sequence_length):
     dataset = args.dataset_id.split('/')[1]
     assert dataset in ["alpaca", "ultrachat"]
 
-    data_dir = os.path.join('data', dataset)
+    data_dir = os.path.join("data", dataset)
     if os.path.exists(data_dir):
         return load_from_disk(data_dir)
     
@@ -206,7 +206,6 @@ if __name__ == "__main__":
     set_seed(args.seed)
     if args.wandb_log and torch.distributed.get_rank() == 0:
         import wandb
-
         wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=args)
 
     with fabric.init_module():
@@ -283,7 +282,7 @@ if __name__ == "__main__":
             attention_mask = attention_mask[:, :-1]
             labels = labels[:, 1:]
             ctx = (
-                fabric._strategy.optimize_communication(model)
+                optimize_communication(True, True, True, model)
                 if args.strategy == "axonn"
                 else nullcontext()
             )
