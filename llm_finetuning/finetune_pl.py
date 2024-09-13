@@ -1,11 +1,11 @@
-from datasets import load_dataset
+import os
+from datasets import load_dataset, load_from_disk
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     AutoConfig,
     DataCollatorForSeq2Seq,
 )
-from datasets import load_dataset
 import torch
 
 # Initializing mpi4py is necessary to use
@@ -21,12 +21,12 @@ import random
 import numpy as np
 from argparse import ArgumentParser
 from contextlib import nullcontext
-from data_utils import get_tokenizer_mapping_fn
 from torch.utils.data import DataLoader
 
 from lightning.fabric import Fabric, seed_everything
 
 from axonn.lightning import AxonnStrategy
+from axonn.intra_layer import optimize_communication, clear_weights_cache
 from lightning.pytorch.strategies import DeepSpeedStrategy
 from lightning.fabric.strategies import FSDPStrategy
 
@@ -74,6 +74,12 @@ def create_parser():
         type=str,
         help="name of huggingface transformers model you want to run",
     )
+    parser.add_argument(
+        "--dataset_id",
+        default="stingning/ultrachat",
+        type=str,
+        help="name of huggingface dataset you want to fine-tune on",
+    )
     parser.add_argument("--seed", type=int, default=123456, help="random seed")
     parser.add_argument(
         "--dtype",
@@ -99,7 +105,7 @@ def create_parser():
         "--gradient-acc-steps", type=int, default=1, help="Gradient Accumulation Steps"
     )
     parser.add_argument(
-        "--sequence-length", type=int, default=256, help="Sequence Length"
+        "--sequence-length", type=int, default=2048, help="Sequence Length"
     )
     parser.add_argument(
         "--num-nodes",
@@ -110,7 +116,7 @@ def create_parser():
     parser.add_argument(
         "--log-interval", type=int, default=10, help="Interval for logging train loss"
     )
-    parser.add_argument("--num-epochs", type=int, default=3, help="Number of epochs")
+    parser.add_argument("--num-epochs", type=int, default=1, help="Number of epochs")
     parser.add_argument(
         "--wandb-log", action="store_true", help="Use Wandb for logging"
     )
@@ -127,8 +133,20 @@ def create_parser():
     return parser
 
 
-def get_tokenized_dataset(tokenizer, sequence_length=256):
-    data = load_dataset("tatsu-lab/alpaca")
+def get_tokenized_dataset(tokenizer, sequence_length):
+    dataset = args.dataset_id.split('/')[1]
+    assert dataset in ["alpaca", "ultrachat"]
+
+    data_dir = os.path.join("data", dataset)
+    if os.path.exists(data_dir):
+        return load_from_disk(data_dir)
+    
+    if dataset == "alpaca":
+        from alpaca_data_utils import get_tokenizer_mapping_fn
+    elif dataset == "ultrachat":
+        from ultrachat_data_utils import get_tokenizer_mapping_fn
+        
+    data = load_dataset(args.dataset_id)
     mapping_fn = get_tokenizer_mapping_fn(
         tokenizer, cutoff_len=sequence_length, train_on_inputs=False
     )
@@ -188,7 +206,6 @@ if __name__ == "__main__":
     set_seed(args.seed)
     if args.wandb_log and torch.distributed.get_rank() == 0:
         import wandb
-
         wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=args)
 
     with fabric.init_module():
@@ -265,7 +282,7 @@ if __name__ == "__main__":
             attention_mask = attention_mask[:, :-1]
             labels = labels[:, 1:]
             ctx = (
-                fabric._strategy.optimize_communication(model)
+                optimize_communication(True, True, True, model)
                 if args.strategy == "axonn"
                 else nullcontext()
             )
