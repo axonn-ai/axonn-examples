@@ -116,7 +116,7 @@ def create_parser():
     parser.add_argument(
         "--log-interval", type=int, default=10, help="Interval for logging train loss"
     )
-    parser.add_argument("--num-epochs", type=int, default=3, help="Number of epochs")
+    parser.add_argument("--num-epochs", type=int, default=1, help="Number of epochs")
     parser.add_argument(
         "--wandb-log", action="store_true", help="Use Wandb for logging"
     )
